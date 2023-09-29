@@ -205,6 +205,13 @@ Note for the URL, we're copying over the values for the PKCS Token and Object.  
 export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=331417054;serial=755a8d9713c105de;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
 
 go run adc.go --pkcsURI=$FULL_PKCS11_URI  --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
+
+## output is json Token specs
+{
+  "access_token": "ya29.c.c0AY_VpZjqp...redacted",
+  "expires_in": 3599,
+  "token_type": "Bearer"
+}
 ```
 
 
