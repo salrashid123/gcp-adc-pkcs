@@ -2,9 +2,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
+	"context"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -14,10 +13,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/miekg/pkcs11"
+	jwt "github.com/golang-jwt/jwt/v4"
+	pk "github.com/salrashid123/golang-jwt-pkcs11"
 	pkcs11uri "github.com/stefanberger/go-pkcs11uri"
-	"golang.org/x/oauth2/jws"
 )
+
+type oauthJWT struct {
+	jwt.RegisteredClaims
+	Scope string `json:"scope"`
+}
 
 type rtokenJSON struct {
 	AccessToken  string `json:"access_token"`
@@ -64,16 +68,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := pkcs11.New(module)
-	err = p.Initialize()
-	if err != nil {
-		fmt.Printf("Error initializing pkcs  %v\n", err)
-		os.Exit(1)
-	}
-
-	defer p.Destroy()
-	defer p.Finalize()
-
 	slot, ok := uri.GetPathAttribute("slot-id", false)
 	if !ok {
 		fmt.Printf("Error reading slot-id PIN from URI %s\n", *pkcsURI)
@@ -103,98 +97,52 @@ func main() {
 		os.Exit(1)
 	}
 
-	session, err := p.OpenSession(uint(slotid), pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
-	if err != nil {
-		fmt.Printf("Error opening session %v\n", err)
-		os.Exit(1)
-	}
-	defer p.CloseSession(session)
-
-	err = p.Login(session, pkcs11.CKU_USER, pin)
-	if err != nil {
-		fmt.Printf("Error logging in %v\n", err)
-		os.Exit(1)
-	}
-	defer p.Logout(session)
-
-	/// *************************** Sign
-
-	privateKeyTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_RSA),
-		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-		pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, object),
-		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
-		pkcs11.NewAttribute(pkcs11.CKA_ID, hex_id),
+	config := &pk.PKConfig{
+		Pin:        pin,
+		KeyLabel:   object,
+		PKCS_ID:    hex_id,
+		SlotNumber: &slotid,
+		Path:       module,
 	}
 
-	if err := p.FindObjectsInit(session, privateKeyTemplate); err != nil {
-		fmt.Printf("Error finding PKCS ObjectInit %v\n", err)
-		os.Exit(1)
-	}
-	pk, _, err := p.FindObjects(session, 1)
-	if err != nil {
-		fmt.Printf("Error finding object %v\n", err)
-		os.Exit(1)
-	}
-	if len(pk) == 0 {
-		fmt.Printf("Error finding private key \n")
-		os.Exit(1)
-	}
-	if err = p.FindObjectsFinal(session); err != nil {
-		fmt.Printf("Error finalizing session %v\n", err)
-		os.Exit(1)
-	}
-
-	err = p.SignInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_SHA256_RSA_PKCS, nil)}, pk[0])
-	if err != nil {
-		fmt.Printf("Error signing init %v\n", err)
-		os.Exit(1)
-	}
-
-	// now we're ready to sign
-
+	// now sign the data
 	iat := time.Now()
 	exp := iat.Add(time.Hour)
 
-	hdr, err := json.Marshal(&jws.Header{
-		Algorithm: "RS256",
-		Typ:       "JWT",
-	})
-	if err != nil {
-		fmt.Printf("google: Unable to marshal  JWT Header: %v", err)
-		os.Exit(1)
+	claims := &oauthJWT{
+		jwt.RegisteredClaims{
+			Issuer:    *svcAccountEmail,
+			Audience:  []string{"https://oauth2.googleapis.com/token"},
+			IssuedAt:  jwt.NewNumericDate(iat),
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+		"https://www.googleapis.com/auth/cloud-platform",
 	}
-	cs, err := json.Marshal(&jws.ClaimSet{
-		Iss:   *svcAccountEmail,
-		Scope: "https://www.googleapis.com/auth/cloud-platform",
-		Aud:   "https://accounts.google.com/o/oauth2/token",
-		Iat:   iat.Unix(),
-		Exp:   exp.Unix(),
-	})
+
+	pk.SigningMethodPKRS256.Override()
+	jwt.MarshalSingleStringAsArray = false
+	token := jwt.NewWithClaims(pk.SigningMethodPKRS256, claims)
+
+	ctx := context.Background()
+
+	keyctx, err := pk.NewPKContext(ctx, config)
 	if err != nil {
-		fmt.Printf("google: Unable to marshal  JWT ClaimSet: %v\n", err)
+		fmt.Printf("Unable to initialize tpmJWT: %v", err)
 		os.Exit(1)
 	}
 
-	j := base64.URLEncoding.EncodeToString([]byte(hdr)) + "." + base64.URLEncoding.EncodeToString([]byte(cs))
-
-	// now sign the data
-
-	sig, err := p.Sign(session, []byte(j))
+	tokenString, err := token.SignedString(keyctx)
 	if err != nil {
-		fmt.Printf("Error signing %v\n", err)
+		fmt.Printf("Error signing %v", err)
 		os.Exit(1)
 	}
-	r := j + "." + base64.RawURLEncoding.EncodeToString(sig)
 
 	client := &http.Client{}
 
 	data := url.Values{}
 	data.Set("grant_type", "assertion")
 	data.Add("assertion_type", "http://oauth.net/grant_type/jwt/1.0/bearer")
-	data.Add("assertion", r)
+	data.Add("assertion", tokenString)
 
 	hreq, err := http.NewRequest("POST", "https://accounts.google.com/o/oauth2/token", bytes.NewBufferString(data.Encode()))
 	hreq.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
@@ -209,7 +157,7 @@ func main() {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("salrashid123/x/oauth2/google: Token Request error:, %v\n", err)
+		fmt.Printf("Error: Token Request error:, %v\n", err)
 		f, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			fmt.Printf("Error Reading response body, %v\n", err)
@@ -224,19 +172,6 @@ func main() {
 		fmt.Printf("Error: unable to parse token response, %v\n", err)
 		os.Exit(1)
 	}
-	resp.Body.Close()
-	// var m rtokenJSON
-	// err = json.Unmarshal(f, &m)
-	// if err != nil {
-	// 	fmt.Printf("Error: Unable to unmarshal response, %v", err)
-	// 	os.Exit(0)
-	// }
-
-	// b, err := json.Marshal(user)
-	// if err != nil {
-	//     fmt.Println(err)
-	//     return
-	// }
+	defer resp.Body.Close()
 	fmt.Println(string(f))
-
 }

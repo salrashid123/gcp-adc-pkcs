@@ -212,10 +212,12 @@ Note for the URL, we're copying over the values for the PKCS Token and Object.  
 
 ```bash
 export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=331417054;serial=755a8d9713c105de;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+# for softHSM
+# export SOFTHSM2_CONF=/tmp/softhsm.conf
 
 CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
 
-gcp-adc-pkcs --pkcsURI=$FULL_PKCS11_URI  --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
+./gcp-adc-pkcs --pkcsURI=$FULL_PKCS11_URI  --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
 
 ## output is json Token specs
 {
@@ -319,7 +321,8 @@ Regenerate the URI in the canonical format for the binary and run
 ```bash
 export FULL_PKCS11_URI="pkcs11:model=vTPM;manufacturer=GOOG;slot-id=01;serial=0000000000000000;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/libtpm2_pkcs11.so.1"
 
-go run adc.go --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
+CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
+./gcp-adc-pkcs --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
 Finally, you may want to restrict access to the TPM device by applying [tpm-udev.rules](https://github.com/salrashid123/tpm2#non-root-access-to-in-kernel-resource-manager-devtpmrm0-usint-tpm2-tss)
@@ -400,7 +403,8 @@ Then construct the URI using these values and execute the binary
 ```bash
 export FULL_PKCS11_URI="pkcs11:model=YubiKey%20YK5;manufacturer=Yubico%20%28www.yubico.com%29;serial=13981219;slot-id=00;token=0;id=02;object=Private%20key%20for%20Digital%20Signature?pin-value=123456&module-path=/usr/local/lib/libykcs11.so"
 
-go run adc.go --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
+CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
+./gcp-adc-pkcs --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
 
