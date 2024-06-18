@@ -6,14 +6,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v4"
+	jwt "github.com/golang-jwt/jwt/v5"
 	pk "github.com/salrashid123/golang-jwt-pkcs11"
 	pkcs11uri "github.com/stefanberger/go-pkcs11uri"
 )
@@ -158,7 +158,7 @@ func main() {
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("Error: Token Request error:, %v\n", err)
-		f, err := ioutil.ReadAll(resp.Body)
+		f, err := io.ReadAll(resp.Body)
 		if err != nil {
 			fmt.Printf("Error Reading response body, %v\n", err)
 			os.Exit(1)
@@ -167,7 +167,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	f, err := ioutil.ReadAll(resp.Body)
+	f, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Printf("Error: unable to parse token response, %v\n", err)
 		os.Exit(1)

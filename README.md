@@ -8,9 +8,15 @@ You can see why here in the protocol itself: [Using OAuth 2.0 for Server to Serv
 
 What this repo offers is a way to generate the JWT while the RSA key is embedded on a `PKCS-11` aware device like an `HSM`, `TPM` or even a `Yubikey`.
 
-(you can also import an external RSA to a device to the same effect but its more secure to have an unexportable key that'll never leave hardware).
+To use this, you must have a GCP service account key on the PKCS-11 device.  There are three ways to do this:
 
-The setup below shows how to use RSA keys on the device  to mint an x509 using `openssl` and then [upload that key to GCP](https://cloud.google.com/iam/docs/keys-upload#uploading) for binding to a service account.  Note that GCP service accounts can have [at most 10 keys](https://cloud.google.com/iam/quotas) associated with it.  This repo uses up one of those slots.  Sometimes you can "import" an RSA into an HSM but thats not covered here.
+1. create an rsa key on the pkcs device, use that to create an x509 and [upload that to GCP](https://cloud.google.com/iam/docs/keys-upload) 
+2. import a service account's private key into the pkcs-11 device.
+
+This repo covers option 2 for simplicity.
+
+
+---
 
 I'm not going into the background of what [PKCS-11](https://en.wikipedia.org/wiki/PKCS_11) is but will state that its pretty particular in its setup.
 
@@ -59,7 +65,7 @@ You can also invoke this binary as a full TokenSource as well:  see
 for `gcloud` cli, you could apply the token directly using [--access-token-file](https://cloud.google.com/sdk/gcloud/reference#--access-token-file):
 
 ```bash
-gcp-adc-tpm --persistentHandle=0x81008000 --svcAccountEmail="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com" | jq -r '.access_token' > token.txt
+gcp-adc-pkcs  --svcAccountEmail="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com" | jq -r '.access_token' > token.txt
 
 gcloud storage ls --access-token-file=token.txt
 ``` 
@@ -99,9 +105,42 @@ dynamic_path = /usr/lib/x86_64-linux-gnu/engines-3/libpkcs11.so
 init = 0
 ```
 
-I've levt the `MODULE_PATH` commented out for now but you will need to set those depending on which backend you're using.
+I've left the `MODULE_PATH` commented out for now but you will need to set those depending on which backend you're using.
+
+if you want to test as is:
+
+```bash
+openssl engine dynamic  -pre SO_PATH:/usr/lib/x86_64-linux-gnu/engines-3/libpkcs11.so \
+     -pre ID:pkcs11 -pre LIST_ADD:1  \
+     -pre LOAD  -pre MODULE_PATH:/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so  -t -c
 
 
+    (dynamic) Dynamic engine loading support
+    [Success]: SO_PATH:/usr/lib/x86_64-linux-gnu/engines-3/libpkcs11.so
+    [Success]: ID:pkcs11
+    [Success]: LIST_ADD:1
+    [Success]: LOAD
+    [Success]: MODULE_PATH:/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
+    Loaded: (pkcs11) pkcs11 engine
+    [RSA, rsaEncryption, id-ecPublicKey]
+        [ available ]     
+```
+
+### GCP Service account
+
+Create a service account key and export its private key
+
+```bash
+export PROJECT_ID=`gcloud config get-value core/project`
+gcloud iam service-accounts create tpm-sa --display-name "TPM Service Account"
+export SERVICE_ACCOUNT_EMAIL=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
+gcloud iam service-accounts keys create tpm-svc-account.json --iam-account=$SERVICE_ACCOUNT_EMAIL
+
+cat tpm-svc-account.json | jq -r '.private_key' > /tmp/f.json
+openssl rsa -in /tmp/f.json -out /tmp/key_rsa.pem 
+
+openssl pkcs8 -topk8 -nocrypt -inform PEM -outform DER     -in  /tmp/key_rsa.pem     -out /tmp/key_rsa.der
+```
 
 ### SoftHSM
 
@@ -109,9 +148,8 @@ I've levt the `MODULE_PATH` commented out for now but you will need to set those
 
 If you just want to test this, you need to [install SoftHSM](https://wiki.opendnssec.org/display/SoftHSMDOCS/SoftHSM+Documentation+v2#SoftHSMDocumentationv2-Download) ofcourse and ensure the driver is present at `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`. Remember to uncomment the openssl.cnf MODULE_PATH line.
 
-From there, you'll create a file called `softhsm.conf`
 
-- `cat /path/to/softhsm.conf`
+Create a file called `/tmp/softhsm.conf` with contents:
 
 ```conf
 log.level = DEBUG
@@ -120,98 +158,83 @@ directories.tokendir = /tmp/tokens
 slots.removable = true
 ```
 
-
 Now we're ready to initialize softhsm to hold a key
 
 ```bash
 export PKCS_MODULE=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
 
-## if you reboot, these are gone
 mkdir /tmp/tokens
-export SOFTHSM2_CONF=/path/to/softhsm.conf
+
+export SOFTHSM2_CONF=/tmp/softhsm.conf
 
 # initialize the hsm
 pkcs11-tool --module $PKCS_MODULE --slot-index=0 --init-token --label="token1" --so-pin="123456"
 pkcs11-tool --module $PKCS_MODULE  --label="token1" --init-pin --so-pin "123456" --pin mynewpin
 ```
 
-Now that we have the HSM initialized, we'll create an RSA key onboard
+Now that we have the HSM initialized, we'll import our service account key into it
 
 ```bash
-pkcs11-tool --module $PKCS_MODULE --label="keylabel1" --login  --pin=mynewpin --id 1  --keypairgen --key-type rsa:2048
-
 ## the list the slots, objects;  ofcourse your values will be different 
 $ pkcs11-tool --module $PKCS_MODULE  --list-token-slots
-        Available slots:
-        Slot 0 (0x13c105de): SoftHSM slot ID 0x13c105de
-        token label        : token1
-        token manufacturer : SoftHSM project
-        token model        : SoftHSM v2
-        token flags        : login required, rng, token initialized, PIN initialized, other flags=0x20
-        hardware version   : 2.6
-        firmware version   : 2.6
-        serial num         : 755a8d9713c105de
-        pin min/max        : 4/255
-        Slot 1 (0x1): SoftHSM slot ID 0x1
-        token state:   uninitialized
+
+    Available slots:
+    Slot 0 (0x36096ef9): SoftHSM slot ID 0x36096ef9
+      token label        : token1
+      token manufacturer : SoftHSM project
+      token model        : SoftHSM v2
+      token flags        : login required, rng, token initialized, PIN initialized, other flags=0x20
+      hardware version   : 2.6
+      firmware version   : 2.6
+      serial num         : cd386436b6096ef9
+      pin min/max        : 4/255
+    Slot 1 (0x1): SoftHSM slot ID 0x1
+      token state:   uninitialized
 
 
-$ pkcs11-tool --module $PKCS_MODULE  --list-objects --pin mynewpin
-        Using slot 0 with a present token (0x13c105de)
-        Public Key Object; RSA 2048 bits
-        label:      keylabel1
-        ID:         01
-        Usage:      encrypt, verify, wrap
-        Access:     local
-        Private Key Object; RSA 
-        label:      keylabel1
-        ID:         01
-        Usage:      decrypt, sign, unwrap
-        Access:     sensitive, always sensitive, never extractable, local
+pkcs11-tool --module $PKCS_MODULE \
+     -l --pin mynewpin --write-object /tmp/key_rsa.der --type privkey --label keylabel1 --id 01
 
-
-## now create a PKCS URI that openssl understands
-export PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;serial=755a8d9713c105de;token=token1;object=keylabel1?pin-value=mynewpin"
+## now create a PKCS URI that openssl understands, remember to change the serial number
+export PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;serial=cd386436b6096ef9;token=token1;object=keylabel1?pin-value=mynewpin"
 
 ## you can print out the public key
-openssl rsa -engine pkcs11  -inform engine -in "$PKCS11_URI" -pubout
+openssl rsa -engine pkcs11  -inform engine -in "$PKCS11_URI" -pubout -out /tmp/key_pub.pem
+openssl rsa -pubin -inform PEM -in /tmp/key_pub.pem -outform DER -out /tmp/key_pub.der
 
-        -----BEGIN PUBLIC KEY-----
-        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0/BzOMZPMNhIhfbSM7on
-        zA+XiQznZ5Qwlin6In4blYspPK4LluhOS3HR/wJW86xsCXT6DdKyM2cagldFxqEZ
-        ogE+xuim0Y/lDfIFQlm0ovliNAn2qKf+ON/gTjByOJgnzwRJKh3Y5NseksV8iK7f
-        56dSj6gfFcG6c/tbyTJJudgII5ZqFUqS0naoHyx+snhgLooeIu2aDVfbY6Ri3CiZ
-        Q+7bCtA0QSkxD9+Nk3fU0I0KRo7wrozUvjQ041rXBBcrjySqepXJLPJoY2X1G81E
-        sikaCFQYuHXxju6XRyHmeF2iq5/tdY0jWOWhkmZfv9qMyZFjSENRP4T8KnLEl+ug
-        YwIDAQAB
-        -----END PUBLIC KEY-----
+pkcs11-tool --module $PKCS_MODULE \
+     -l --pin mynewpin --write-object /tmp/key_pub.der --type pubkey --label keylabel1 --id 01
 
 
-## we can instruct openssl to use this embedded key to generate a certificate
+## now you should see both the public and private key:
 
-openssl req -new -x509 -days 365 \
-  -subj "/C=US/ST=CA/L=Mountain View/O=Google/OU=Enterprise/CN=pkcs-sa" \
-   -sha256 -engine pkcs11 -keyform engine -key  "$PKCS11_URI"  -out cert_softhsm.pem
-```
+$ pkcs11-tool --module $PKCS_MODULE  --list-objects --pin mynewpin
 
-Now tht we have a certificate, we can upload this key and associate it with a service account
+    Using slot 0 with a present token (0x36096ef9)
+    Public Key Object; RSA 2048 bits
+      label:      keylabel1
+      ID:         01
+      Usage:      encrypt, verify, verifyRecover, wrap
+      Access:     none
+    Private Key Object; RSA 
+      label:      keylabel1
+      ID:         01
+      Usage:      decrypt, sign, signRecover, unwrap
+      Access:     sensitive
 
-```bash
-export PROJECT_ID=`gcloud config get-value core/project`
-
-gcloud iam service-accounts create tpm-sa
-
-gcloud iam service-accounts keys upload cert_softhsm.pem  --iam-account tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
-
-gcloud iam service-accounts keys list --iam-account=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
 At this point we need to create a PKCS URL for that key.
 
-Note for the URL, we're copying over the values for the PKCS Token and Object.  Specifically all the values we listed above (note that the slot-id value below is from hex->decimal: `0x13c105de --> 331417054`)
+Note for the URL, we're copying over the values for the PKCS Token and Object.  Specifically all the values we listed above (note that the slot-id value below is from hex->decimal: `0x36096ef9 --> 906587897`).  Also remember to specify the `serial=` value to match what you see as the `serial number` above
 
 ```bash
-export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=331417054;serial=755a8d9713c105de;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+export SLOT_ID=906587897
+export SERIAL=cd386436b6096ef9
+
+export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=$SLOT_ID;serial=$SERIAL;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+
+
 # for softHSM
 # export SOFTHSM2_CONF=/tmp/softhsm.conf
 
@@ -227,6 +250,7 @@ CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
 }
 ```
 
+---
 
 ### TPM
 
@@ -236,7 +260,7 @@ If you want to generate an RSA key on a TPM, you'll first need to install some s
 apt-get update && apt-get install libtpm2-pkcs11-1 tpm2-tools libengine-pkcs11-openssl opensc  gnutls -y
 ```
 
-You should verify `/usr/lib/x86_64-linux-gnu/libtpm2_pkcs11.so.1` is installed and lined.
+You should verify `/usr/lib/x86_64-linux-gnu/libtpm2_pkcs11.so.1` is installed (or at `/usr/local/lib/libtpm2_pkcs11.so`).
 
 
 As with SoftHSM, we will initialized the device and generate an RSA key onboard:
@@ -326,6 +350,8 @@ CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
 ```
 
 Finally, you may want to restrict access to the TPM device by applying [tpm-udev.rules](https://github.com/salrashid123/tpm2#non-root-access-to-in-kernel-resource-manager-devtpmrm0-usint-tpm2-tss)
+
+---
 
 ### YubiKey
 
