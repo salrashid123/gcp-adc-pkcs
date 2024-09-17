@@ -4,7 +4,7 @@ Binary that just returns a Service Accounts `access_token` for use with GCP Cred
 
 While not running on a GCP platform like GCE, Cloud Run, GCF or GKE, `Service Account` authentication usually (with exception of workload federation) requires direct access to its RSA Private key.. 
 
-You can see why here in the protocol itself: [Using OAuth 2.0 for Server to Server Applications](https://developers.google.com/identity/protocols/oauth2/service-account#authorizingrequests).  Basically service account authentication involves locally signing a JWT using a registered private key and then exchanging the JWT for an `access_token`.
+You can see why here in the protocol itself in [AIP-4111: Self-signed JWT with Scopes](https://google.aip.dev/auth/4111).  Basically service account authentication involves locally signing a JWT and using that directly as an  `access_token`.
 
 What this repo offers is a way to generate the JWT while the RSA key is embedded on a `PKCS-11` aware device like an `HSM`, `TPM` or even a `Yubikey`.
 

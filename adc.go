@@ -1,26 +1,25 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 	pk "github.com/salrashid123/golang-jwt-pkcs11"
 	pkcs11uri "github.com/stefanberger/go-pkcs11uri"
+	"golang.org/x/oauth2"
 )
 
 type oauthJWT struct {
-	jwt.RegisteredClaims
 	Scope string `json:"scope"`
+	jwt.RegisteredClaims
 }
 
 type rtokenJSON struct {
@@ -33,6 +32,7 @@ type rtokenJSON struct {
 var (
 	pkcsURI         = flag.String("pkcsURI", "", "Full PKCSURI")
 	svcAccountEmail = flag.String("serviceAccountEmail", "", "Service Account Email")
+	scopes          = flag.String("scopes", "https://www.googleapis.com/auth/cloud-platform", "comma separated scopes")
 )
 
 const ()
@@ -110,13 +110,13 @@ func main() {
 	exp := iat.Add(time.Hour)
 
 	claims := &oauthJWT{
-		jwt.RegisteredClaims{
-			Issuer:    *svcAccountEmail,
-			Audience:  []string{"https://oauth2.googleapis.com/token"},
+		Scope: strings.Replace(*scopes, ",", " ", -1),
+		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(iat),
 			ExpiresAt: jwt.NewNumericDate(exp),
+			Issuer:    *svcAccountEmail,
+			Subject:   *svcAccountEmail,
 		},
-		"https://www.googleapis.com/auth/cloud-platform",
 	}
 
 	pk.SigningMethodPKRS256.Override()
@@ -137,41 +137,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := &http.Client{}
+	f := &oauth2.Token{AccessToken: tokenString, TokenType: "Bearer", Expiry: exp}
 
-	data := url.Values{}
-	data.Set("grant_type", "assertion")
-	data.Add("assertion_type", "http://oauth.net/grant_type/jwt/1.0/bearer")
-	data.Add("assertion", tokenString)
-
-	hreq, err := http.NewRequest("POST", "https://oauth2.googleapis.com/token", bytes.NewBufferString(data.Encode()))
+	fs, err := json.Marshal(f)
 	if err != nil {
-		fmt.Printf("Error: Unable to generate token Request, %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error creating json sting %v", err)
 		os.Exit(1)
 	}
-	hreq.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
-	resp, err := client.Do(hreq)
-	if err != nil {
-		fmt.Printf("Error: unable to POST token request, %v\n", err)
-		os.Exit(1)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Error: Token Request error:, %v\n", err)
-		f, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Printf("Error Reading response body, %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Error response from oauth2 %s\n", f)
-		os.Exit(1)
-	}
-
-	f, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Printf("Error: unable to parse token response, %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	fmt.Println(string(f))
+	fmt.Println(string(fs))
 }
