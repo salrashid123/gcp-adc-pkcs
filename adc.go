@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -33,6 +37,8 @@ var (
 	pkcsURI         = flag.String("pkcsURI", "", "Full PKCSURI")
 	svcAccountEmail = flag.String("serviceAccountEmail", "", "Service Account Email")
 	scopes          = flag.String("scopes", "https://www.googleapis.com/auth/cloud-platform", "comma separated scopes")
+	identityToken   = flag.Bool("identityToken", false, "Generate google ID token (default: false)")
+	audience        = flag.String("audience", "", "Audience for the OIDC token")
 )
 
 const ()
@@ -105,7 +111,99 @@ func main() {
 		Path:       module,
 	}
 
-	// now sign the data
+	// now we're ready to sign
+
+	if *identityToken {
+		if *audience == "" {
+			fmt.Fprintf(os.Stderr, "ERROR:  audience must be set if --identityToken is used")
+			return
+		}
+		iat := time.Now()
+		exp := iat.Add(time.Second * 10)
+
+		type idTokenJWT struct {
+			jwt.RegisteredClaims
+			TargetAudience string `json:"target_audience"`
+		}
+
+		claims := &idTokenJWT{
+			jwt.RegisteredClaims{
+				Issuer:    *svcAccountEmail,
+				IssuedAt:  jwt.NewNumericDate(iat),
+				ExpiresAt: jwt.NewNumericDate(exp),
+				Audience:  []string{"https://oauth2.googleapis.com/token"},
+			},
+			*audience,
+		}
+
+		pk.SigningMethodPKRS256.Override()
+		jwt.MarshalSingleStringAsArray = false
+		token := jwt.NewWithClaims(pk.SigningMethodPKRS256, claims)
+
+		ctx := context.Background()
+
+		keyctx, err := pk.NewPKContext(ctx, config)
+		if err != nil {
+			fmt.Printf("Unable to initialize tpmJWT: %v", err)
+			os.Exit(1)
+		}
+
+		tokenString, err := token.SignedString(keyctx)
+		if err != nil {
+			fmt.Printf("Error signing %v", err)
+			os.Exit(1)
+		}
+		client := &http.Client{}
+
+		data := url.Values{}
+		data.Add("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+		data.Add("assertion", tokenString)
+
+		hreq, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", bytes.NewBufferString(data.Encode()))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Unable to generate token Request, %v\n", err)
+			return
+		}
+		hreq.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
+		resp, err := client.Do(hreq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: unable to POST token request, %v\n", err)
+			return
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			f, err := io.ReadAll(resp.Body)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error Reading response body, %v\n", err)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Error: Token Request error:, %s\n", f)
+			return
+		}
+		defer resp.Body.Close()
+
+		type idTokenResponse struct {
+			IdToken string `json:"id_token"`
+		}
+
+		var ret idTokenResponse
+		err = json.NewDecoder(resp.Body).Decode(&ret)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: decoding token:, %s\n", err)
+			return
+		}
+		idTokenSource := oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: ret.IdToken,
+		})
+		t, err := idTokenSource.Token()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: decoding token:, %s\n", err)
+			return
+		}
+		fmt.Println(string(t.AccessToken))
+		return
+
+	}
 	iat := time.Now()
 	exp := iat.Add(time.Hour)
 

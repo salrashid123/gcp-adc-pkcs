@@ -1,6 +1,6 @@
 ### PKCS-11 Credential Source for Google Cloud SDK
 
-Binary that just returns a Service Accounts `access_token` for use with GCP Credential Libraries where the key is accessed using `PKCS-11`.
+Binary that just returns a Service Accounts `access_token` or `id_token` for use with GCP Credential Libraries where the key is accessed using `PKCS-11`.
 
 While not running on a GCP platform like GCE, Cloud Run, GCF or GKE, `Service Account` authentication usually (with exception of workload federation) requires direct access to its RSA Private key.. 
 
@@ -37,8 +37,22 @@ and other references/reps for PKCS-11
 * [PKCS with TPMs](https://github.com/salrashid123/tpm2/tree/master/pkcs11)
 * [golang-jwt for PKCS11](https://github.com/salrashid123/golang-jwt-pkcs11)
 * [TPM Credential Source for Google Cloud SDK](https://github.com/salrashid123/gcp-adc-tpm)
+* [Authenticating using Google OpenID Connect Tokens](https://github.com/salrashid123/google_id_token)
 
 >> this repo is NOT supported by google
+
+---
+### Configuration Options
+
+You can set the following options on usage:
+
+| Option | Description |
+|:------------|-------------|
+| **`--pkcsURI`** | PKCS URI pointing to the RSA key  |
+| **`--svcAccountEmail`** | (required) Service Account Email |
+| **`--scopes`** |  comma separated scopes (default `https://www.googleapis.com/auth/cloud-platform`) |
+| **`--identityToken`** |  Generate Google OIDC token |
+| **`--audience`** |  Audience for the id_token |
 
 ---
 
@@ -433,6 +447,13 @@ CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
 ./gcp-adc-pkcs --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
+### Acquire identity_token
+
+This uitlity can also genrate GCP ODIC id_tokens using the TPM based key.
+
+```bash
+./gcp-adc-pkcs   --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com --identityToken --audience=foo
+```
 
 ---
 
