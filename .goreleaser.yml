@@ -11,16 +11,10 @@ builds:
   - id: gcp-adc-pkcs
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
-      - arm64
-    goamd64:
-      - v1
-    goarm:
-      - 7
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
     binary: gcp-adc-pkcs
     builder: go
     tool: go
