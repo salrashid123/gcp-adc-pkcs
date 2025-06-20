@@ -455,6 +455,17 @@ This uitlity can also genrate GCP ODIC id_tokens using the TPM based key.
 ./gcp-adc-pkcs   --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com --identityToken --audience=foo
 ```
 
+### Testing
+
+Unit test just verifies that a token is returned.  TODO is to validate the token against a gcp api (the oauth2 tokeninfo endopoint wont work because the access token is a self-signed JWT)
+
+```bash
+export CICD_SA_NAME="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com"
+export CICD_SA_PEM=`cat /tmp/key_rsa.pem`
+
+go test -v
+```
+
 ---
 
 

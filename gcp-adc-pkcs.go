@@ -1,11 +1,10 @@
-package main
+package gcppkcscredential
 
 import (
 	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,97 +25,105 @@ type oauthJWT struct {
 	jwt.RegisteredClaims
 }
 
-type rtokenJSON struct {
+type Token struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
 	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"`
+	ExpiresIn    int64  `json:"expires_in"`
 }
 
-var (
-	pkcsURI         = flag.String("pkcsURI", "", "Full PKCSURI")
-	svcAccountEmail = flag.String("serviceAccountEmail", "", "Service Account Email")
-	scopes          = flag.String("scopes", "https://www.googleapis.com/auth/cloud-platform", "comma separated scopes")
-	identityToken   = flag.Bool("identityToken", false, "Generate google ID token (default: false)")
-	audience        = flag.String("audience", "", "Audience for the OIDC token")
-)
+var ()
 
 const ()
 
-func main() {
+type GCPPKCSConfig struct {
+	PKCSURI string
 
-	flag.Parse()
+	ExpireIn int
 
-	if *pkcsURI == "" || *svcAccountEmail == "" {
-		fmt.Println("Both pkcsURI and serviceAccountEmail must be specified")
-		os.Exit(1)
-	}
+	IdentityToken       bool
+	Audience            string
+	ServiceAccountEmail string
+	Scopes              []string
+}
+
+var ()
+
+func NewGCPPKCSCredential(cfg *GCPPKCSConfig) (Token, error) {
 
 	uri := pkcs11uri.New()
 
-	err := uri.Parse(*pkcsURI)
+	err := uri.Parse(cfg.PKCSURI)
 	if err != nil {
-		fmt.Printf("Error parsing pkcs11 URI %v\n", err)
-		os.Exit(1)
+
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: Error parsing pkcs11 URI %v", err)
 	}
 
 	//uri.SetAllowedModulePaths([]string{"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"})
 	uri.SetAllowAnyModule(true)
 	module, err := uri.GetModule()
 	if err != nil {
-		fmt.Printf("Error loading module from path %v\n", err)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: loading module from path %v", err)
 	}
 
 	pin, err := uri.GetPIN()
 	if err != nil {
-		fmt.Printf("Error extracting PIN from URI %v\n", err)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: extracting PIN from URI %v", err)
 	}
 
-	slot, ok := uri.GetPathAttribute("slot-id", false)
-	if !ok {
-		fmt.Printf("Error reading slot-id PIN from URI %s\n", *pkcsURI)
-		os.Exit(1)
+	config := &pk.PKConfig{
+		Pin:  pin,
+		Path: module,
 	}
-	slotid, err := strconv.Atoi(slot)
-	if err != nil {
-		fmt.Printf("Error converting slot to string %v\n", err)
-		os.Exit(1)
+
+	cntr := 0
+	var slotid int
+	slot, ok := uri.GetPathAttribute("slot-id", false)
+	if ok {
+		cntr++
+		slotid, err = strconv.Atoi(slot)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs converting slot to string %v", err)
+		}
+		config.SlotNumber = &slotid
+	}
+	tokenlabel, ok := uri.GetPathAttribute("token", false)
+	if ok {
+		cntr++
+		config.TokenLabel = tokenlabel
+	}
+	serial, ok := uri.GetPathAttribute("serial", false)
+	if ok {
+		cntr++
+		config.TokenSerial = serial
+	}
+
+	if cntr > 1 {
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: exactly one of tokenlabel or slot-id or serial must be specified")
 	}
 
 	id, ok := uri.GetPathAttribute("id", false)
 	if !ok {
-		fmt.Printf("Error loading PKCS ID from URI %s\n", *pkcsURI)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: loading PKCS ID from URI %s", cfg.PKCSURI)
 	}
 
-	hex_id, err := hex.DecodeString(id)
+	pkcs_object_id, err := hex.DecodeString(id)
 	if err != nil {
-		fmt.Printf("Error converting hex id to string %v\n", err)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs:  converting hex id to string %v", err)
 	}
+	config.PKCS_ID = pkcs_object_id
 
 	object, ok := uri.GetPathAttribute("object", false)
 	if !ok {
-		fmt.Printf("Error no object in URI %s\n", *pkcsURI)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: Error no object in URI %s", cfg.PKCSURI)
 	}
-
-	config := &pk.PKConfig{
-		Pin:        pin,
-		KeyLabel:   object,
-		PKCS_ID:    hex_id,
-		SlotNumber: &slotid,
-		Path:       module,
-	}
+	config.KeyID = object
 
 	// now we're ready to sign
 
-	if *identityToken {
-		if *audience == "" {
-			fmt.Fprintf(os.Stderr, "ERROR:  audience must be set if --identityToken is used")
-			return
+	if cfg.IdentityToken {
+		if cfg.Audience == "" {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs:   audience must be set if --identityToken is used")
 		}
 		iat := time.Now()
 		exp := iat.Add(time.Second * 10)
@@ -127,13 +134,13 @@ func main() {
 		}
 
 		claims := &idTokenJWT{
-			jwt.RegisteredClaims{
-				Issuer:    *svcAccountEmail,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Issuer:    cfg.ServiceAccountEmail,
 				IssuedAt:  jwt.NewNumericDate(iat),
 				ExpiresAt: jwt.NewNumericDate(exp),
 				Audience:  []string{"https://oauth2.googleapis.com/token"},
 			},
-			*audience,
+			TargetAudience: cfg.Audience,
 		}
 
 		pk.SigningMethodPKRS256.Override()
@@ -144,8 +151,7 @@ func main() {
 
 		keyctx, err := pk.NewPKContext(ctx, config)
 		if err != nil {
-			fmt.Printf("Unable to initialize tpmJWT: %v", err)
-			os.Exit(1)
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Unable to initialize : %v", err)
 		}
 
 		tokenString, err := token.SignedString(keyctx)
@@ -161,24 +167,20 @@ func main() {
 
 		hreq, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", bytes.NewBufferString(data.Encode()))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: Unable to generate token Request, %v\n", err)
-			return
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error: Unable to generate token Request, %v", err)
 		}
 		hreq.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
 		resp, err := client.Do(hreq)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: unable to POST token request, %v\n", err)
-			return
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			f, err := io.ReadAll(resp.Body)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error Reading response body, %v\n", err)
-				return
+				return Token{}, fmt.Errorf("gcp-adc-pkcs: Error Reading response body, %v", err)
 			}
-			fmt.Fprintf(os.Stderr, "Error: Token Request error:, %s\n", f)
-			return
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error: Token Request error:, %s", f)
 		}
 		defer resp.Body.Close()
 
@@ -189,31 +191,30 @@ func main() {
 		var ret idTokenResponse
 		err = json.NewDecoder(resp.Body).Decode(&ret)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: decoding token:, %s\n", err)
-			return
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error: decoding token:, %s", err)
 		}
 		idTokenSource := oauth2.StaticTokenSource(&oauth2.Token{
 			AccessToken: ret.IdToken,
 		})
 		t, err := idTokenSource.Token()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: decoding token:, %s\n", err)
-			return
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error: decoding token:, %s", err)
 		}
-		fmt.Println(string(t.AccessToken))
-		return
+		return Token{
+			AccessToken: t.AccessToken,
+		}, nil
 
 	}
 	iat := time.Now()
 	exp := iat.Add(time.Hour)
 
 	claims := &oauthJWT{
-		Scope: strings.Replace(*scopes, ",", " ", -1),
+		Scope: strings.Join(cfg.Scopes, " "),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(iat),
 			ExpiresAt: jwt.NewNumericDate(exp),
-			Issuer:    *svcAccountEmail,
-			Subject:   *svcAccountEmail,
+			Issuer:    cfg.ServiceAccountEmail,
+			Subject:   cfg.ServiceAccountEmail,
 		},
 	}
 
@@ -225,22 +226,19 @@ func main() {
 
 	keyctx, err := pk.NewPKContext(ctx, config)
 	if err != nil {
-		fmt.Printf("Unable to initialize tpmJWT: %v", err)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: Unable to initialize context: %v", err)
 	}
 
 	tokenString, err := token.SignedString(keyctx)
 	if err != nil {
-		fmt.Printf("Error signing %v", err)
-		os.Exit(1)
+		return Token{}, fmt.Errorf("gcp-adc-pkcs: Error signing %v", err)
 	}
 
 	f := &oauth2.Token{AccessToken: tokenString, TokenType: "Bearer", Expiry: exp}
 
-	fs, err := json.Marshal(f)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating json sting %v", err)
-		os.Exit(1)
-	}
-	fmt.Println(string(fs))
+	return Token{
+		AccessToken: f.AccessToken,
+		TokenType:   f.TokenType,
+		ExpiresIn:   int64(exp.Sub(iat).Seconds()),
+	}, nil
 }
