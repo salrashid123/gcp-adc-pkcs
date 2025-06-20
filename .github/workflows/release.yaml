@@ -14,8 +14,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-
     steps:
+      - name: Install softhsm
+        run: sudo apt-get install -y libsofthsm2-dev opensc
+
       - name: Check out code
         uses: actions/checkout@v4
 
