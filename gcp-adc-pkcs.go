@@ -26,10 +26,20 @@ type oauthJWT struct {
 }
 
 type Token struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
+	// AccessToken is the token that authorizes and authenticates
+	// the requests.
+	AccessToken string `json:"access_token"`
+
+	// TokenType is the type of token.
+	// The Type method returns either this or "Bearer", the default.
+	TokenType string `json:"token_type,omitempty"`
+
+	// ExpiresIn is the OAuth2 wire format "expires_in" field,
+	// which specifies how many seconds later the token expires,
+	// relative to an unknown time base approximately around "now".
+	// It is the application's responsibility to populate
+	// `Expiry` from `ExpiresIn` when required.
+	ExpiresIn int64 `json:"expires_in,omitempty"`
 }
 
 var ()
@@ -45,6 +55,7 @@ type GCPPKCSConfig struct {
 	Audience            string
 	ServiceAccountEmail string
 	Scopes              []string
+	UseOauthToken       bool // enables oauth2 token (default: false)
 }
 
 var ()
@@ -200,45 +211,121 @@ func NewGCPPKCSCredential(cfg *GCPPKCSConfig) (Token, error) {
 		if err != nil {
 			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error: decoding token:, %s", err)
 		}
-		return Token{
-			AccessToken: t.AccessToken,
-		}, nil
+		defaultExpSeconds := 3600
+		f := Token{AccessToken: t.AccessToken, TokenType: "Bearer", ExpiresIn: int64(defaultExpSeconds)}
+
+		return f, nil
 
 	}
-	iat := time.Now()
-	exp := iat.Add(time.Hour)
 
-	claims := &oauthJWT{
-		Scope: strings.Join(cfg.Scopes, " "),
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(iat),
-			ExpiresAt: jwt.NewNumericDate(exp),
-			Issuer:    cfg.ServiceAccountEmail,
-			Subject:   cfg.ServiceAccountEmail,
-		},
+	var f Token
+	if cfg.UseOauthToken {
+
+		iat := time.Now()
+		exp := iat.Add(10 * time.Second) // we only need this JWT valid long enough to exchange for an access_token
+
+		claims := &oauthJWT{
+			Scope: strings.Join(cfg.Scopes, " "),
+			RegisteredClaims: jwt.RegisteredClaims{
+				IssuedAt:  jwt.NewNumericDate(iat),
+				ExpiresAt: jwt.NewNumericDate(exp),
+				Issuer:    cfg.ServiceAccountEmail,
+				Audience:  []string{"https://oauth2.googleapis.com/token"},
+			},
+		}
+
+		pk.SigningMethodPKRS256.Override()
+		jwt.MarshalSingleStringAsArray = false
+		token := jwt.NewWithClaims(pk.SigningMethodPKRS256, claims)
+
+		ctx := context.Background()
+
+		keyctx, err := pk.NewPKContext(ctx, config)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Unable to initialize context: %v", err)
+		}
+
+		tokenString, err := token.SignedString(keyctx)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error signing %v", err)
+		}
+		client := &http.Client{}
+
+		data := url.Values{}
+		data.Set("grant_type", "assertion")
+		data.Add("assertion_type", "http://oauth.net/grant_type/jwt/1.0/bearer")
+		data.Add("assertion", tokenString)
+
+		hreq, err := http.NewRequest(http.MethodPost, "https://accounts.google.com/o/oauth2/token", bytes.NewBufferString(data.Encode()))
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs:  Error signing %v", err)
+		}
+		hreq.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
+		resp, err := client.Do(hreq)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs:  Error signing %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			f, err := io.ReadAll(resp.Body)
+			defer resp.Body.Close()
+			if err != nil {
+				return Token{}, fmt.Errorf("gcp-adc-pkcs: : Error signing %v", err)
+			}
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: : Token Request error:, %s", string(f))
+		}
+
+		fa, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-tpm: Error signing %v", err)
+		}
+		resp.Body.Close()
+		type rtokenJSON struct {
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int    `json:"expires_in"`
+		}
+		var m rtokenJSON
+		err = json.Unmarshal(fa, &m)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-tpm: Error signing %v", err)
+		}
+		defaultExpSeconds := 3600
+		f = Token{AccessToken: m.AccessToken, TokenType: "Bearer", ExpiresIn: int64(defaultExpSeconds)}
+
+	} else {
+
+		iat := time.Now()
+		exp := iat.Add(time.Hour)
+
+		claims := &oauthJWT{
+			Scope: strings.Join(cfg.Scopes, " "),
+			RegisteredClaims: jwt.RegisteredClaims{
+				IssuedAt:  jwt.NewNumericDate(iat),
+				ExpiresAt: jwt.NewNumericDate(exp),
+				Issuer:    cfg.ServiceAccountEmail,
+				Subject:   cfg.ServiceAccountEmail,
+			},
+		}
+
+		pk.SigningMethodPKRS256.Override()
+		jwt.MarshalSingleStringAsArray = false
+		token := jwt.NewWithClaims(pk.SigningMethodPKRS256, claims)
+
+		ctx := context.Background()
+
+		keyctx, err := pk.NewPKContext(ctx, config)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Unable to initialize context: %v", err)
+		}
+
+		tokenString, err := token.SignedString(keyctx)
+		if err != nil {
+			return Token{}, fmt.Errorf("gcp-adc-pkcs: Error signing %v", err)
+		}
+		defaultExpSeconds := 3600
+		f = Token{AccessToken: tokenString, TokenType: "Bearer", ExpiresIn: int64(defaultExpSeconds)}
 	}
 
-	pk.SigningMethodPKRS256.Override()
-	jwt.MarshalSingleStringAsArray = false
-	token := jwt.NewWithClaims(pk.SigningMethodPKRS256, claims)
-
-	ctx := context.Background()
-
-	keyctx, err := pk.NewPKContext(ctx, config)
-	if err != nil {
-		return Token{}, fmt.Errorf("gcp-adc-pkcs: Unable to initialize context: %v", err)
-	}
-
-	tokenString, err := token.SignedString(keyctx)
-	if err != nil {
-		return Token{}, fmt.Errorf("gcp-adc-pkcs: Error signing %v", err)
-	}
-
-	f := &oauth2.Token{AccessToken: tokenString, TokenType: "Bearer", Expiry: exp}
-
-	return Token{
-		AccessToken: f.AccessToken,
-		TokenType:   f.TokenType,
-		ExpiresIn:   int64(exp.Sub(iat).Seconds()),
-	}, nil
+	return f, nil
 }

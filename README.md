@@ -53,6 +53,7 @@ You can set the following options on usage:
 | **`--scopes`** |  comma separated scopes (default `https://www.googleapis.com/auth/cloud-platform`) |
 | **`--identityToken`** |  Generate Google OIDC token |
 | **`--audience`** |  Audience for the id_token |
+| **`--useOauthToken`** | enable oauth2 token (default:false) |
 
 ---
 
@@ -243,11 +244,15 @@ At this point we need to create a PKCS URL for that key.
 Note for the URL, we're copying over the values for the PKCS Token and Object.  Specifically all the values we listed above (note that the slot-id value below is from hex->decimal: `0x36096ef9 --> 906587897`).  Also remember to specify the `serial=` value to match what you see as the `serial number` above
 
 ```bash
-export SLOT_ID=906587897
-export SERIAL=cd386436b6096ef9
+## with slot
+# export SLOT_ID=906587897
+# export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=$SLOT_ID;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
 
-export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;slot-id=$SLOT_ID;serial=$SERIAL;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+## with serial
+# export SERIAL=cd386436b6096ef9
+# export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;serial=$SERIAL;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
 
+export FULL_PKCS11_URI="pkcs11:model=SoftHSM%20v2;manufacturer=SoftHSM%20project;token=token1;object=keylabel1;id=01?pin-value=mynewpin&module-path=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
 
 # for softHSM
 # export SOFTHSM2_CONF=/tmp/softhsm.conf
@@ -452,7 +457,21 @@ CGO_ENABLED=1 go build -o gcp-adc-pkcs adc.go
 This uitlity can also genrate GCP ODIC id_tokens using the TPM based key.
 
 ```bash
-./gcp-adc-pkcs   --pkcsURI=$FULL_PKCS11_URI --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com --identityToken --audience=foo
+./gcp-adc-pkcs   --pkcsURI=$FULL_PKCS11_URI \
+   --serviceAccountEmail=tpm-sa@$PROJECT_ID.iam.gserviceaccount.com --identityToken --audience=foo
+```
+
+### Acquire oauth2 token
+
+The default token this utility returns is a `JWT AccessToken with Scopes` described in [AIP4111: Self-signed JWT](https://google.aip.dev/auth/4111).  This is a custom flow for Google Cloud APIs and is not an Oauth2 Token.
+
+If you want to acquire an actual oauth2 token as described [here](https://developers.google.com/identity/protocols/oauth2#serviceaccount) request, then just set `--useOauthToken`
+
+```bash
+./gcp-adc-pkcs   --pkcsURI=$FULL_PKCS11_URI \
+   --svcAccountEmail="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com \
+   --useOauthToken
+
 ```
 
 ### Testing
@@ -460,7 +479,7 @@ This uitlity can also genrate GCP ODIC id_tokens using the TPM based key.
 Unit test just verifies that a token is returned.  TODO is to validate the token against a gcp api (the oauth2 tokeninfo endopoint wont work because the access token is a self-signed JWT)
 
 ```bash
-export CICD_SA_NAME="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com"
+export CICD_SA_EMAIL="tpm-sa@$PROJECT_ID.iam.gserviceaccount.com"
 export CICD_SA_PEM=`cat /tmp/key_rsa.pem`
 
 go test -v

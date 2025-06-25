@@ -195,7 +195,7 @@ slots.removable = true`, tempDir)
 
 func TestToken(t *testing.T) {
 
-	saEmail := os.Getenv("CICD_SA_NAME")
+	saEmail := os.Getenv("CICD_SA_EMAIL")
 	saPEM := os.Getenv("CICD_SA_PEM")
 
 	keyID, serial, err := loadKey(t, saPEM)
@@ -220,4 +220,61 @@ func TestToken(t *testing.T) {
 		})
 	}
 
+}
+
+func TestOauthToken(t *testing.T) {
+
+	saEmail := os.Getenv("CICD_SA_EMAIL")
+	saPEM := os.Getenv("CICD_SA_PEM")
+
+	keyID, _, err := loadKey(t, saPEM)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"label", fmt.Sprintf("pkcs11:model=SoftHSM%%20v2;manufacturer=SoftHSM%%20project;token=token1;object=priv1;id=%s?pin-value=mynewpin&module-path=%s", hex.EncodeToString(keyID), lib)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewGCPPKCSCredential(&GCPPKCSConfig{
+				PKCSURI:             tc.url,
+				ServiceAccountEmail: saEmail,
+				Scopes:              []string{"https://www.googleapis.com/auth/cloud-platform"},
+				UseOauthToken:       true,
+			})
+			require.NoError(t, err)
+			// TODO: verify if its an actual token
+		})
+	}
+}
+
+func TestIdToken(t *testing.T) {
+
+	saEmail := os.Getenv("CICD_SA_EMAIL")
+	saPEM := os.Getenv("CICD_SA_PEM")
+
+	keyID, _, err := loadKey(t, saPEM)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"label", fmt.Sprintf("pkcs11:model=SoftHSM%%20v2;manufacturer=SoftHSM%%20project;token=token1;object=priv1;id=%s?pin-value=mynewpin&module-path=%s", hex.EncodeToString(keyID), lib)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewGCPPKCSCredential(&GCPPKCSConfig{
+				PKCSURI:             tc.url,
+				ServiceAccountEmail: saEmail,
+				Scopes:              []string{"https://www.googleapis.com/auth/cloud-platform"},
+				IdentityToken:       true,
+				Audience:            "https://foo.bar",
+			})
+			require.NoError(t, err)
+			// TODO: verify if its an actual token
+		})
+	}
 }

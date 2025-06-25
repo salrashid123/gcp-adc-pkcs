@@ -19,6 +19,7 @@ var (
 	identityToken   = flag.Bool("identityToken", false, "Generate google ID token (default: false)")
 	audience        = flag.String("audience", "", "Audience for the OIDC token")
 	expireIn        = flag.Int("expireIn", 3600, "Token expires in seconds")
+	useOauthToken   = flag.Bool("useOauthToken", false, "Use oauth2 token instead of jwtAccessToken (default: false)")
 
 	version = flag.Bool("version", false, "print version")
 
@@ -50,6 +51,7 @@ func main() {
 		ServiceAccountEmail: *svcAccountEmail,
 		ExpireIn:            *expireIn,
 		Scopes:              strings.Split(*scopes, ","),
+		UseOauthToken:       *useOauthToken,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gcp-pkcs-process-credential: Error getting credentials %v", err)
