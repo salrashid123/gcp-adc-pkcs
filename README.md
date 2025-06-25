@@ -54,6 +54,7 @@ You can set the following options on usage:
 | **`--identityToken`** |  Generate Google OIDC token |
 | **`--audience`** |  Audience for the id_token |
 | **`--useOauthToken`** | enable oauth2 token (default:false) |
+| **`--rawOutput`** |  Return just the token, nothing else |
 
 ---
 

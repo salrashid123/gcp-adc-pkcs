@@ -21,7 +21,8 @@ var (
 	expireIn        = flag.Int("expireIn", 3600, "Token expires in seconds")
 	useOauthToken   = flag.Bool("useOauthToken", false, "Use oauth2 token instead of jwtAccessToken (default: false)")
 
-	version = flag.Bool("version", false, "print version")
+	rawOutput = flag.Bool("rawOutput", false, "return just the token, nothing else")
+	version   = flag.Bool("version", false, "print version")
 
 	Commit, Tag, Date string
 )
@@ -56,6 +57,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gcp-pkcs-process-credential: Error getting credentials %v", err)
 		os.Exit(1)
+	}
+	if *rawOutput {
+		fmt.Println(resp.AccessToken)
+		return
 	}
 	m, err := json.Marshal(resp)
 	if err != nil {
